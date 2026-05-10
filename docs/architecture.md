@@ -3,7 +3,7 @@
 This document describes the runtime components, data flows, and key design
 decisions of UAP Explorer. For product capabilities, see the
 [README](../README.md). For the original product spec, see
-[UAP Explorer - App Specifications.md](../UAP%20Explorer%20-%20App%20Specifications.md).
+[UAP Explorer - App Specifications.md](UAP%20Explorer%20-%20App%20Specifications.md).
 
 ---
 

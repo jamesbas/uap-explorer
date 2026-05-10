@@ -16,7 +16,7 @@ The project is implemented in four phases. **All four phases are now complete.**
 | 4 | Reports, evidence scoring, entity explorer, compare, exports | ✅ |
 
 See [docs/architecture.md](docs/architecture.md) for a detailed component map and
-[UAP Explorer - App Specifications.md](UAP%20Explorer%20-%20App%20Specifications.md)
+[UAP Explorer - App Specifications.md](docs/UAP%20Explorer%20-%20App%20Specifications.md)
 for the original product spec.
 
 ---

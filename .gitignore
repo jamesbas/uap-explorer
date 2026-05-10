@@ -19,9 +19,6 @@ frontend/.env
 .DS_Store
 Thumbs.db
 
-# Local docs (kept out of the public repo)
-docs/
-
 # Large local source-file cache (~2.5 GB) — re-downloadable from sources
 ufo_release_01_files/
 

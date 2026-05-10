@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: ./backend
+    container_name: uap-explorer-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=local
+      - FRONTEND_URL=http://localhost:5173
+      - UAP_CSV_PATH=/data/source/uap-csv.csv
+      - UAP_FILE_ROOT=/data/files
+    volumes:
+      - ./data:/data
+      - ./ufo_release_01_files:/data/files:ro
+
+  frontend:
+    build: ./frontend
+    container_name: uap-explorer-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend

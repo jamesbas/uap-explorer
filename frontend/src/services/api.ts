@@ -48,12 +48,17 @@ async function request<T>(
   }
   const res = await fetch(`${BASE}${path}`, { ...opts, headers });
   if (!res.ok) {
-    let detail = "";
-    try {
-      const j = await res.json();
-      detail = j.detail || JSON.stringify(j);
-    } catch {
-      detail = await res.text();
+    // Read the body exactly once — calling both res.json() and res.text() on
+    // the same Response throws "body stream already read".
+    const raw = await res.text().catch(() => "");
+    let detail = raw;
+    if (raw) {
+      try {
+        const j = JSON.parse(raw);
+        detail = j.detail || JSON.stringify(j);
+      } catch {
+        // raw is already plain text
+      }
     }
     throw new Error(`Request failed (${res.status}): ${detail || path}`);
   }
@@ -231,6 +236,7 @@ export function generateReport(
   return request<Report>(`/api/reports/${encodeURIComponent(slug)}/generate`, {
     method: "POST",
     body: JSON.stringify(body),
+    admin: true,
   });
 }
 

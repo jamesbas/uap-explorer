@@ -231,7 +231,9 @@ parallel arrays.
 - **React 18 + Vite 5 + TypeScript 5.** No global state library; pages own
   their data with `useEffect`.
 - **`services/api.ts`** is the only place that talks HTTP. It's a thin typed
-  wrapper around `fetch` with an admin-Bearer-token interceptor.
+  wrapper around `fetch` with an admin-Bearer-token interceptor. The
+  `generateReport()` call sets `admin: true` so the token is automatically
+  attached; the matching backend route uses `Depends(require_admin)`.
 - **`services/researchPack.ts`** holds a simple list of document IDs in
   `localStorage` under `uap_research_pack`. It exposes `addToPack`,
   `removeFromPack`, `togglePack`, `getPack`, `clearPack`, and an
@@ -239,15 +241,22 @@ parallel arrays.
   and same-tab `uap:pack-change` custom events.
 - **`Leaflet`** is pinned to `react-leaflet` v4 because v5 requires React 19.
 - **`styles/global.css`** carries the dark theme, the SVG saucer + radar-ping
-  background (subtle, opacity ~0.18), and an `@media print` block that hides
-  navigation/toolbars and forces white-on-black inversion so "Print / Save
-  PDF" produces a clean report.
+  background (subtle, opacity ~0.18), the **Ask hero CTA** gradient panel on
+  the Home page, the **donate-block** styling, and an `@media print` block
+  that hides navigation/toolbars and forces white-on-black inversion so
+  "Print / Save PDF" produces a clean report.
+- **`components/DonateBlock.tsx`** is a self-contained PayPal hosted-button
+  form-POST embed (Hosted Button ID `PPTC2GVVTTXPC`). It uses the single-
+  button variant so no PayPal JS SDK script tag is required — the form opens
+  PayPal in a new tab on click.
 
 ### Routing
 
-`App.tsx` defines the nav bar and routes for the 16 pages listed in the
-[README](../README.md#frontend-pages). Admin nav appears only when an admin
-token is present in `localStorage` (`uap_admin_token`).
+`App.tsx` defines the nav bar and routes. The full page list:
+`/`, `/browse`, `/search`, `/ask`, `/map`, `/timeline`, `/media`, `/topics`,
+`/topics/:slug`, `/analytics`, `/entities`, `/reports`, `/compare`,
+`/records/:id`, `/help`, `/about`, `/admin`. Admin nav appears only when an
+admin token is present in `localStorage` (`uap_admin_token`).
 
 ### Citation rendering
 
@@ -281,12 +290,18 @@ Azure-side state lives in:
 - The frontend admin surface is gated by `ADMIN_PASSWORD` exchanged via
   `POST /api/admin/login` for a bearer token. Token verification uses
   `auth.require_admin` as a FastAPI dependency.
-- All write operations (ingestion run, index create/recreate) require the
-  admin token.
-- CORS is configured for `FRONTEND_URL`; production deployment should
-  same-origin host both services behind a single reverse proxy.
+- All write operations and **paid LLM operations** require the admin token:
+  ingestion run, index create/recreate, **and report generation
+  (`POST /api/reports/{slug}/generate`)**. Cached reports remain readable to
+  anyone via `GET /api/reports/{slug}` and the Markdown export.
+- CORS is configured for `FRONTEND_URL`; production deployment same-origin
+  hosts both services behind the frontend nginx, so CORS is effectively a
+  no-op in production.
 - Azure clients respect `AZURE_AUTH_MODE=managed_identity`, allowing key-less
   operation when running on Azure compute with appropriate role assignments.
+- All Azure data-plane keys, the admin password, and the storage connection
+  string are stored as **Container Apps secrets** in production and injected
+  as `secretRef` env vars — they never appear in container images.
 
 ---
 
@@ -320,7 +335,96 @@ Invoke-RestMethod "http://127.0.0.1:8001/api/compare?ids=$($ids[0])&ids=$($ids[1
 
 ---
 
-## 11. Known limitations
+## 11. Production deployment (Azure Container Apps)
+
+```
+                  Internet (HTTPS)
+                       │
+                       ▼
+        ┌──────────────────────────────────┐
+        │ ca-uapexplorer-frontend          │  external ingress
+        │ nginx:1.27-alpine  :8080         │  (SPA + reverse proxy)
+        │   / → static SPA (Vite build)    │
+        │   /api/*, /health → BACKEND_URL  │
+        └────────────────┬─────────────────┘
+                         │  http://<internal-fqdn>
+                         ▼
+        ┌──────────────────────────────────┐
+        │ ca-uapexplorer-backend           │  internal ingress
+        │ python:3.12-slim  :8000          │  (FastAPI / uvicorn)
+        │ Bundles data/source/uap-csv.csv  │
+        └────────────────┬─────────────────┘
+                         │
+                         ▼   Azure key-auth
+        ┌──────────────────────────────────┐
+        │ Storage / Search / OpenAI /      │
+        │ Document Intelligence            │
+        └──────────────────────────────────┘
+```
+
+### Bicep components ([infra/main.bicep](../infra/main.bicep))
+
+| Resource | Name | Notes |
+|---|---|---|
+| Log Analytics workspace | `log-uapexplorer` | App / system logs |
+| User-assigned identity | `id-uapexplorer` | Granted `AcrPull` on ACR |
+| Container Registry (Basic) | `acruapexplorer{unique}` | Image hosting; admin user disabled |
+| Container Apps Environment | `cae-uapexplorer` | Consumption workload profile |
+| Container App (backend) | `ca-uapexplorer-backend` | Internal:8000, `allowInsecure=true` |
+| Container App (frontend) | `ca-uapexplorer-frontend` | External:8080 |
+
+### Secrets
+
+All secrets (admin password, storage connection string, AI Search admin key,
+Azure OpenAI key, Doc Intelligence key) are stored as **Container Apps secrets**
+on the backend app and referenced via `secretRef` env vars. The deploy
+script populates them from `backend/.env` at deploy time; nothing sensitive is
+baked into the image.
+
+### Frontend nginx
+
+`frontend/nginx.conf.template` proxies `/api/*` and `/health` to the backend's
+internal FQDN. Two nginx subtleties baked into the Dockerfile:
+
+- `NGINX_ENVSUBST_FILTER="^(BACKEND_URL|PORT)$"` so the official nginx image's
+  envsubst doesn't accidentally replace nginx-native variables like `$host` or
+  `$remote_addr`.
+- `proxy_set_header Host $proxy_host;` so Container Apps ingress can route the
+  request to the right app (it 404s any request whose `Host` doesn't match a
+  known app FQDN).
+
+The backend's internal ingress has `allowInsecure: true` so plain HTTP from the
+frontend over the env's private network doesn't get a 301 \u2192 HTTPS redirect
+that would be forwarded back to the browser.
+
+### Operations runbook
+
+| Task | Command |
+|---|---|
+| Full deploy (build + roll) | `powershell -ExecutionPolicy Bypass -File .\infra\deploy.ps1` |
+| Roll only (use latest pushed tags) | `... .\infra\deploy.ps1 -SkipBuild` |
+| Rebuild images, don't touch infra | `... .\infra\deploy.ps1 -SkipInfra` |
+| Tail backend logs | `az containerapp logs show -n ca-uapexplorer-backend -g rgJabAI-UAPExplorer --follow` |
+| Rotate admin password | `az containerapp secret set -n ca-uapexplorer-backend -g rgJabAI-UAPExplorer --secrets admin-password=NEW` |
+| Pin max scale | `az containerapp update -n <app> -g rgJabAI-UAPExplorer --max-replicas N` |
+| Park app (0 cost) | `az containerapp update -n <app> -g rgJabAI-UAPExplorer --max-replicas 0` |
+
+The deploy script is Windows-PowerShell-5.1-compatible (avoids Unicode in code
+paths, forces UTF-8 console + `chcp 65001`) and uses `az acr build --no-logs`
+because the bundled CLI's colorama log streamer crashes on Windows cp1252 when
+pip output contains non-ASCII characters. Build status is verified from the
+`provisioningState` field instead of live log tailing.
+
+### Storage caveat
+
+`data/processed/` (extracted text, AI summaries, cached reports) lives in the
+backend container's writable layer. It persists for the life of the
+*revision/replica* but **does not survive new deploys**. If long-lived caching
+becomes important, mount an Azure Files share at `/app/data/processed`.
+
+---
+
+## 12. Known limitations
 
 - The document store is fully in-memory. The architecture assumes O(low
   thousands) of records.

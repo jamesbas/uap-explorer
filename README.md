@@ -6,7 +6,9 @@ released metadata and (when available) the original PDFs/images, then offers
 multiple ways to browse, search, ask questions about, and report on the archive
 — always with citations back to the original documents.
 
-The project is implemented in four phases. **All four phases are now complete.**
+**Live deployment**: https://ca-uapexplorer-frontend.livelyground-02a57294.eastus.azurecontainerapps.io
+
+All four feature phases are complete:
 
 | Phase | Capability | Status |
 |---|---|---|
@@ -14,8 +16,10 @@ The project is implemented in four phases. **All four phases are now complete.**
 | 2 | Azure ingestion + grounded "Ask the archive" | ✅ |
 | 3 | Map, timeline, media, topics, analytics | ✅ |
 | 4 | Reports, evidence scoring, entity explorer, compare, exports | ✅ |
+| — | Containerized deployment on Azure Container Apps (Bicep IaC) | ✅ |
 
-See [docs/architecture.md](docs/architecture.md) for a detailed component map and
+See [docs/architecture.md](docs/architecture.md) for a detailed component map,
+[infra/README.md](infra/README.md) for deployment, and
 [UAP Explorer - App Specifications.md](docs/UAP%20Explorer%20-%20App%20Specifications.md)
 for the original product spec.
 
@@ -42,6 +46,8 @@ for the original product spec.
 - **Reports** — eight LLM-written report templates (e.g. *Best Documented
   Cases*, *Radar-related Reports*) with strict JSON output, `[doc:ID]`
   citations, cached generation, Markdown export, and browser print-to-PDF.
+  Generation is **admin-gated** (each cache miss is a paid LLM call); reading
+  cached reports remains public.
 - **Evidence quality score** — eight deterministic dimensions (date,
   location, source, media, witness, redaction, corroboration, resolution)
   shown on every record. Includes an explicit **neutrality disclaimer**: the
@@ -51,8 +57,12 @@ for the original product spec.
   the **Compare** view for side-by-side metadata, AI summaries, and evidence
   scores.
 - **Subtle UFO theme** — animated saucer + radar-ping background.
+- **Help center** — inline guide to every feature, the evidence-score
+  methodology, and the project's neutrality stance.
+- **Donate** — PayPal hosted-button block on the Home and About pages for
+  voluntary support of hosting / Azure AI costs.
 - **Admin console** — password-gated UI for ingestion runs, AI Search index
-  create/recreate, and ingestion status.
+  create/recreate, ingestion status, and report generation.
 
 ---
 
@@ -232,7 +242,7 @@ Document Intelligence.
 | `GET` | `/api/entities` | Entity buckets (agency, location, date, aircraft, spacecraft, sensor, base, project, object_shape, event) |
 | `GET` | `/api/reports` | List the 8 report templates |
 | `GET` | `/api/reports/{slug}` | Cached report (404 if not generated) |
-| `POST` | `/api/reports/{slug}/generate` | Generate a report (`document_ids?`, `force?`) |
+| `POST` | `/api/reports/{slug}/generate` | Generate a report (`document_ids?`, `force?`) — **admin-only** |
 | `GET` | `/api/reports/{slug}/export.md` | Markdown download |
 | `GET` | `/api/compare?ids=&ids=` | Side-by-side records + summaries + evidence |
 
@@ -244,7 +254,7 @@ Full schema is browsable at `/docs` (Swagger UI).
 
 | Route | Page | Notes |
 |---|---|---|
-| `/` | Home | Stats overview |
+| `/` | Home | Stats, "Ask the archive" hero CTA, donate block |
 | `/browse` | Browse | Faceted browse with filters + paging |
 | `/search` | Search | Keyword search across metadata |
 | `/ask` | Ask the archive | Grounded Q&A with citations |
@@ -255,11 +265,93 @@ Full schema is browsable at `/docs` (Swagger UI).
 | `/topics/:slug` | Topic detail | Records for a curated topic |
 | `/analytics` | Analytics | Multi-facet dashboard |
 | `/entities` | Entity explorer | Filterable entity buckets |
-| `/reports` | Reports | Generate / view / export reports |
+| `/reports` | Reports | View / export reports; generate (admin-only) |
 | `/compare` | Compare | Side-by-side from research pack |
 | `/records/:id` | Record detail | Metadata + AI summary + evidence panel + research pack toggle |
-| `/about` | About | Project background |
+| `/help` | Help | Feature guide + evidence methodology + neutrality stance |
+| `/about` | About | Project story, capabilities, donate, GitHub link |
 | `/admin` | Admin | Login, ingestion, index ops |
+
+---
+
+## Deployment (Azure Container Apps)
+
+Production runs on **Azure Container Apps** in `eastus`, provisioned by Bicep
+in [infra/main.bicep](infra/main.bicep) and orchestrated by
+[infra/deploy.ps1](infra/deploy.ps1). Two apps live in one Environment:
+
+```
+[external]  ca-uapexplorer-frontend  nginx:1.27-alpine  port 8080
+                  │ /api, /health proxy (BACKEND_URL env)
+                  ▼
+[internal]  ca-uapexplorer-backend   python:3.12-slim   port 8000
+```
+
+Supporting resources (all in resource group `rgJabAI-UAPExplorer`):
+
+- ACR Basic (`acruapexplorer{unique}`) hosts the two images.
+- User-assigned Managed Identity with `AcrPull` on the registry.
+- Log Analytics workspace (`log-uapexplorer`) for app logs.
+- Container Apps Environment (`cae-uapexplorer`) on the Consumption profile.
+- All Azure data-plane keys (storage, search, OpenAI, Doc Intel, admin pwd) are
+  stored as **Container Apps secrets** and surfaced via `secretRef` env vars
+  \u2014 they are never baked into the image.
+
+### Reusable deploy script
+
+```powershell
+$env:PATH = "$env:PATH;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin"
+cd C:\Code\uap-explorer
+powershell -ExecutionPolicy Bypass -File .\infra\deploy.ps1
+```
+
+The script:
+
+1. Sets the subscription (`9c245e09-df78-44f6-9253-a2a176e6f147` by default,
+   override with `-SubscriptionId`).
+2. Creates/uses resource group `rgJabAI-UAPExplorer`.
+3. Reads secrets from `backend/.env`.
+4. Runs Bicep to provision ACR + Env + apps (placeholder images first time).
+5. `az acr build` for backend (stages the source CSV) and frontend.
+6. Re-runs Bicep with the real image tags to roll new revisions.
+7. Patches the backend's `FRONTEND_URL` for CORS.
+
+Useful flags:
+
+| Flag | Effect |
+|---|---|
+| `-SkipBuild` | Skip image builds; redeploy infra against the latest pushed tags. |
+| `-SkipInfra` | Skip Bicep; just rebuild and roll the apps. |
+| `-NamePrefix x` | Override the resource name prefix (default `uapexplorer`). |
+
+### Scale & cost controls
+
+Both apps default to `minReplicas=0, maxReplicas=2` \u2014 they **scale to zero**
+when idle. Tighten or pin with one-off commands:
+
+```powershell
+# Cap at one replica each (saves on burst):
+az containerapp update -n ca-uapexplorer-backend  -g rgJabAI-UAPExplorer --max-replicas 1
+az containerapp update -n ca-uapexplorer-frontend -g rgJabAI-UAPExplorer --max-replicas 1
+
+# Park completely (zero compute charges):
+az containerapp update -n ca-uapexplorer-backend  -g rgJabAI-UAPExplorer --max-replicas 0
+az containerapp update -n ca-uapexplorer-frontend -g rgJabAI-UAPExplorer --max-replicas 0
+```
+
+### Rotating the admin password (no rebuild required)
+
+```powershell
+az containerapp secret set `
+    --name ca-uapexplorer-backend `
+    --resource-group rgJabAI-UAPExplorer `
+    --secrets admin-password=YourNewPasswordHere
+```
+
+This auto-rolls a new revision. Also update `backend/.env` locally so future
+`deploy.ps1` runs don't overwrite the new value.
+
+See [infra/README.md](infra/README.md) for the full deploy/operate runbook.
 
 ---
 

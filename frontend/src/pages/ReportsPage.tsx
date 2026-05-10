@@ -4,6 +4,7 @@ import {
   fetchCachedReport,
   fetchReportTemplates,
   generateReport,
+  isAdmin,
   reportMarkdownUrl,
 } from "../services/api";
 import { getPack } from "../services/researchPack";
@@ -95,40 +96,53 @@ export default function ReportsPage() {
           {selected && (
             <>
               <div className="toolbar">
-                <button
-                  className="button"
-                  disabled={loading}
-                  onClick={() => handleGenerate(false)}
-                >
-                  {loading
-                    ? "Generating…"
-                    : report
-                    ? "Regenerate (cached)"
-                    : "Generate report"}
-                </button>
-                <button
-                  className="button secondary"
-                  disabled={loading}
-                  onClick={() => handleGenerate(true)}
-                  title="Force regeneration even if cached"
-                >
-                  Force regenerate
-                </button>
-                <label
-                  className="muted"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={usePack}
-                    onChange={(e) => setUsePack(e.target.checked)}
-                  />
-                  Restrict to research pack ({pack.length})
-                </label>
+                {isAdmin() ? (
+                  <>
+                    <button
+                      className="button"
+                      disabled={loading}
+                      onClick={() => handleGenerate(false)}
+                    >
+                      {loading
+                        ? "Generating…"
+                        : report
+                        ? "Regenerate (cached)"
+                        : "Generate report"}
+                    </button>
+                    <button
+                      className="button secondary"
+                      disabled={loading}
+                      onClick={() => handleGenerate(true)}
+                      title="Force regeneration even if cached"
+                    >
+                      Force regenerate
+                    </button>
+                    <label
+                      className="muted"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={usePack}
+                        onChange={(e) => setUsePack(e.target.checked)}
+                      />
+                      Restrict to research pack ({pack.length})
+                    </label>
+                  </>
+                ) : (
+                  !report && (
+                    <p className="muted" style={{ margin: 0 }}>
+                      Report generation is an admin-only feature (each new
+                      report calls a paid LLM). <Link to="/admin">Sign in</Link>{" "}
+                      to generate, or pick a template that already has a cached
+                      report.
+                    </p>
+                  )
+                )}
                 {report && (
                   <a
                     className="button secondary"
@@ -156,8 +170,9 @@ export default function ReportsPage() {
                 <ReportView report={report} />
               ) : (
                 <p className="muted">
-                  No report generated yet. Click <strong>Generate report</strong>{" "}
-                  above.
+                  {isAdmin()
+                    ? (<>No report generated yet. Click <strong>Generate report</strong> above.</>)
+                    : "No cached report exists for this template yet."}
                 </p>
               )}
             </>

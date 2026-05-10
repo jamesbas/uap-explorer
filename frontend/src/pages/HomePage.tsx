@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchStats } from "../services/api";
 import type { StatsResponse } from "../types/models";
+import DonateBlock from "../components/DonateBlock";
 
 export default function HomePage() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
@@ -48,14 +49,32 @@ export default function HomePage() {
             <Link to="/search" className="button secondary">
               Search the archive
             </Link>
+            <Link to="/help" className="button secondary">
+              How to use this site
+            </Link>
           </div>
+
+          <section className="ask-cta">
+            <div className="ask-cta-body">
+              <span className="ask-cta-badge">AI · Grounded Q&amp;A</span>
+              <h2 className="ask-cta-title">Ask the archive a question</h2>
+              <p className="ask-cta-text">
+                Try natural language. <em>"Which UAP incidents involved the Navy
+                in the 1950s?"</em> <em>"Show me cases reported over Oak Ridge."</em>{" "}
+                The app retrieves matching records from the indexed archive and
+                writes a citation-backed answer that links straight back to the
+                source PDFs. No speculation — just what the released documents
+                actually say.
+              </p>
+              <Link to="/ask" className="button ask-cta-button">
+                Ask a question →
+              </Link>
+            </div>
+          </section>
+
+          <DonateBlock />
         </>
       )}
-
-      <div className="placeholder-box">
-        <strong>Coming soon:</strong> AI-grounded Q&amp;A (Phase 2), maps and timelines
-        (Phase 3), and citation-backed reports (Phase 4).
-      </div>
     </div>
   );
 }

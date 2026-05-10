@@ -1,0 +1,12 @@
+# Build artefacts and local-only files
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.env
+tests
+.vscode
+.git
+*.log
+.DS_Store
+Thumbs.db

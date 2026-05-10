@@ -1,0 +1,8 @@
+# Build artefacts
+node_modules
+dist
+.vscode
+.git
+*.log
+.DS_Store
+Thumbs.db

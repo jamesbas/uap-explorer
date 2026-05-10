@@ -6,9 +6,10 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
+from ..auth import require_admin
 from ..config import settings
 from ..models import (
     CompareResponse,
@@ -59,7 +60,15 @@ def get_cached_report(slug: str) -> Report:
 
 
 @router.post("/api/reports/{slug}/generate", response_model=Report)
-def generate_report(slug: str, req: Optional[ReportRequest] = None) -> Report:
+def generate_report(
+    slug: str,
+    req: Optional[ReportRequest] = None,
+    _: None = Depends(require_admin),
+) -> Report:
+    """Generate (or force-regenerate) a report. Admin-only because each
+    cache miss triggers a paid LLM call. Cached reports remain readable
+    by anyone via GET /api/reports/{slug}.
+    """
     req = req or ReportRequest()
     try:
         result = reports_service.generate(

@@ -4,6 +4,7 @@ import BrowsePage from "./pages/BrowsePage";
 import SearchPage from "./pages/SearchPage";
 import RecordDetailPage from "./pages/RecordDetailPage";
 import AboutPage from "./pages/AboutPage";
+import HelpPage from "./pages/HelpPage";
 import AskPage from "./pages/AskPage";
 import AdminPage from "./pages/AdminPage";
 import MediaPage from "./pages/MediaPage";
@@ -46,6 +47,7 @@ export default function App() {
           <NavLink to="/entities">Entities</NavLink>
           <NavLink to="/reports">Reports</NavLink>
           <NavLink to="/compare">Compare</NavLink>
+          <NavLink to="/help">Help</NavLink>
           <NavLink to="/about">About</NavLink>
           <NavLink to="/admin">{isAdmin() ? "Admin" : "Admin login"}</NavLink>
         </nav>
@@ -67,6 +69,7 @@ export default function App() {
           <Route path="/topics/:slug" element={<TopicDetailPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/records/:id" element={<RecordDetailPage />} />
+          <Route path="/help" element={<HelpPage />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/admin" element={<AdminPage />} />
           <Route

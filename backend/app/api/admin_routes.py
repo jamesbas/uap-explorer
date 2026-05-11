@@ -57,6 +57,8 @@ def ingestion_run(
         document_ids=req.document_ids,
         max_docs=req.max_docs,
         ensure_index=req.ensure_index,
+        summaries_only=req.summaries_only,
+        regenerate_summaries=req.regenerate_summaries,
     )
 
 

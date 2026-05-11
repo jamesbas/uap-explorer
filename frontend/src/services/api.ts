@@ -147,6 +147,8 @@ export function startIngestion(opts: {
   document_ids?: string[];
   max_docs?: number;
   ensure_index?: boolean;
+  summaries_only?: boolean;
+  regenerate_summaries?: boolean;
 }): Promise<{ started: boolean; reason?: string; summary?: string }> {
   return request("/api/ingestion/run", {
     method: "POST",

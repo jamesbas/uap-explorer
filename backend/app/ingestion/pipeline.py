@@ -182,6 +182,73 @@ def get_cached_summary(doc_id: str) -> Optional[dict]:
     return None
 
 
+def _load_cached_extracted_text(doc_id: str) -> Optional[str]:
+    """Return concatenated page text from the cached extraction JSON, or None."""
+    p = EXTRACTED_DIR / f"{doc_id}.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        pages = data.get("pages") or []
+        return "\n\n".join((pg.get("text") or "") for pg in pages).strip() or None
+    except Exception:
+        return None
+
+
+def _process_one_summary_only(doc: DocumentRecord, regenerate: bool) -> None:
+    """Generate (or regenerate) only the AI summary for one document.
+
+    Skips blob upload, chunking, embedding, and search-index writes. Reuses
+    the cached extracted text if available; otherwise re-extracts from the
+    local file (still no blob/index side effects).
+    """
+    status.set_current(doc.title)
+    status.log(f"Summary-only: {doc.title}")
+
+    if not regenerate and (SUMMARY_DIR / f"{doc.document_id}.json").exists():
+        status.record_skipped(f"summary already cached: {doc.title}")
+        return
+
+    if (doc.file_type or "").lower() != "pdf":
+        status.record_skipped(f"non-PDF file type: {doc.title}")
+        return
+
+    full_text = _load_cached_extracted_text(doc.document_id)
+    if not full_text:
+        if not doc.local_file_path or not Path(doc.local_file_path).exists():
+            status.record_skipped(f"no cached text and local file missing: {doc.title}")
+            return
+        try:
+            pages = extract_pages(Path(doc.local_file_path), use_doc_intelligence=True)
+        except Exception as e:  # noqa: BLE001
+            status.record_error(doc.document_id, doc.title, f"extraction failed: {e}")
+            return
+        full_text = "\n\n".join(t for _, t in pages if t).strip()
+        if not full_text:
+            status.record_error(doc.document_id, doc.title, "no extractable text (empty pages)")
+            return
+        # Cache extracted text so a future summaries-only run is free.
+        try:
+            (EXTRACTED_DIR / f"{doc.document_id}.json").write_text(
+                json.dumps(
+                    {"document_id": doc.document_id, "title": doc.title,
+                     "pages": [{"page": p, "text": t} for p, t in pages]},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    try:
+        summary = _generate_summary(doc, full_text)
+        _save_summary(doc.document_id, summary)
+        status.log(f"  → summary cached for {doc.title}")
+        status.record_completed()
+    except Exception as e:  # noqa: BLE001
+        status.record_error(doc.document_id, doc.title, f"summary failed: {e}")
+
+
 # ---------------------------------------------------------------- main runner
 def _process_one(doc: DocumentRecord) -> None:
     status.set_current(doc.title)
@@ -263,6 +330,8 @@ def run_ingestion(
     document_ids: Optional[List[str]] = None,
     max_docs: Optional[int] = None,
     ensure_index: bool = True,
+    summaries_only: bool = False,
+    regenerate_summaries: bool = False,
 ) -> dict:
     """Synchronous run. Use run_ingestion_async() from the API layer."""
     if not _RUN_LOCK.acquire(blocking=False):
@@ -271,9 +340,10 @@ def run_ingestion(
     try:
         cap = max_docs if max_docs is not None else settings.ingestion_max_docs
         targets = _select_documents(document_ids, cap)
-        status.begin_run(target_count=len(targets), max_docs=cap, mode="api")
+        mode = "summaries-only" if summaries_only else "api"
+        status.begin_run(target_count=len(targets), max_docs=cap, mode=mode)
 
-        if ensure_index:
+        if ensure_index and not summaries_only:
             try:
                 search_index.create_or_update_index()
                 status.log("Search index ensured.")
@@ -282,7 +352,10 @@ def run_ingestion(
 
         for doc in targets:
             try:
-                _process_one(doc)
+                if summaries_only:
+                    _process_one_summary_only(doc, regenerate=regenerate_summaries)
+                else:
+                    _process_one(doc)
             except Exception as e:  # noqa: BLE001
                 status.record_error(doc.document_id, doc.title, str(e))
 
@@ -301,6 +374,8 @@ def run_ingestion_async(
     document_ids: Optional[List[str]] = None,
     max_docs: Optional[int] = None,
     ensure_index: bool = True,
+    summaries_only: bool = False,
+    regenerate_summaries: bool = False,
 ) -> dict:
     """Spawn ingestion in a background thread; returns immediately."""
     if status.is_running():
@@ -312,6 +387,8 @@ def run_ingestion_async(
             "document_ids": document_ids,
             "max_docs": max_docs,
             "ensure_index": ensure_index,
+            "summaries_only": summaries_only,
+            "regenerate_summaries": regenerate_summaries,
         },
         daemon=True,
         name="uap-ingestion",

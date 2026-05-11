@@ -63,6 +63,7 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
   const [indexInfo, setIndexInfo] = useState<IndexStats | null>(null);
   const [maxDocs, setMaxDocs] = useState<number>(30);
   const [ensureIndex, setEnsureIndex] = useState(true);
+  const [regenerateSummaries, setRegenerateSummaries] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
 
@@ -86,17 +87,23 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
     return () => clearInterval(id);
   }, []);
 
-  async function handleStart(opts: { full?: boolean } = {}) {
+  async function handleStart(opts: { full?: boolean; summariesOnly?: boolean } = {}) {
     setActionMsg(null);
     try {
       const r = await startIngestion({
         max_docs: opts.full ? 10000 : maxDocs,
         ensure_index: ensureIndex,
+        summaries_only: opts.summariesOnly === true,
+        regenerate_summaries: opts.summariesOnly === true ? regenerateSummaries : false,
       });
       if (!r.started) {
         setActionMsg(`Not started: ${r.reason || "unknown"}`);
       } else {
-        setActionMsg("Ingestion started. Watching status…");
+        setActionMsg(
+          opts.summariesOnly
+            ? "Summaries-only run started. Watching status…"
+            : "Ingestion started. Watching status…",
+        );
       }
       refresh();
     } catch (e) {
@@ -178,6 +185,14 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
             />
             &nbsp;Ensure index exists first
           </label>
+          <label className="muted" style={{ alignSelf: "center" }}>
+            <input
+              type="checkbox"
+              checked={regenerateSummaries}
+              onChange={(e) => setRegenerateSummaries(e.target.checked)}
+            />
+            &nbsp;Regenerate existing summaries (summaries-only mode)
+          </label>
         </div>
         <div className="actions">
           <button
@@ -193,6 +208,14 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
             onClick={() => handleStart({ full: true })}
           >
             Run ingestion (all docs)
+          </button>
+          <button
+            className="button secondary"
+            disabled={status?.running}
+            title="Skip extraction/chunking/embedding/indexing; only (re)generate AI summary JSON files. Useful after switching LLM models."
+            onClick={() => handleStart({ full: true, summariesOnly: true })}
+          >
+            Generate summaries only (all docs)
           </button>
         </div>
       </div>

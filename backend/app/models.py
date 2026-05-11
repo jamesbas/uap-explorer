@@ -98,6 +98,13 @@ class IngestionRequest(BaseModel):
     document_ids: Optional[List[str]] = None
     max_docs: Optional[int] = None
     ensure_index: bool = True
+    # When true, skip blob upload / extraction / chunking / embedding /
+    # search-index upload and only (re)generate the AI summary JSON files.
+    summaries_only: bool = False
+    # In summaries_only mode, regenerate summaries even when a cached one
+    # already exists. Has no effect outside summaries_only mode (the normal
+    # pipeline always overwrites the summary).
+    regenerate_summaries: bool = False
 
 
 class LoginRequest(BaseModel):

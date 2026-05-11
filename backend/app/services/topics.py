@@ -115,6 +115,28 @@ TOPIC_CATALOG: List[Topic] = [
 
 _SUMMARY_DIR = settings.processed_root / "summaries"
 
+# In-process cache for the per-document haystack text. The haystack is
+# derived from the DocumentRecord plus the cached AI summary JSON on disk.
+# Building it requires reading a JSON file from the persistent share
+# (Azure Files / SMB in production), which is dramatically slower than a
+# local filesystem. Topic and analytics endpoints call _haystack() once
+# per (document x topic) pair, so caching is essential.
+#
+# Cache key: (document_id, summary_mtime_ns or 0).
+# If the summary file is added/updated, mtime changes and the entry is
+# invalidated automatically without needing manual cache busting.
+_HAYSTACK_CACHE: Dict[tuple[str, int], str] = {}
+
+
+def _summary_mtime_ns(doc_id: str) -> int:
+    p = _SUMMARY_DIR / f"{doc_id}.json"
+    try:
+        return p.stat().st_mtime_ns
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return 0
+
 
 def _summary_text(doc: DocumentRecord) -> str:
     """Best-effort: include text from a cached AI summary if one exists."""
@@ -136,6 +158,10 @@ def _summary_text(doc: DocumentRecord) -> str:
 
 
 def _haystack(doc: DocumentRecord) -> str:
+    key = (doc.document_id, _summary_mtime_ns(doc.document_id))
+    cached = _HAYSTACK_CACHE.get(key)
+    if cached is not None:
+        return cached
     parts = [
         doc.title or "",
         doc.description or "",
@@ -144,7 +170,12 @@ def _haystack(doc: DocumentRecord) -> str:
         doc.incident_location or "",
         _summary_text(doc),
     ]
-    return " ".join(parts).lower()
+    h = " ".join(parts).lower()
+    # Drop any stale entries for this document_id (older mtime).
+    for k in [k for k in _HAYSTACK_CACHE if k[0] == doc.document_id and k != key]:
+        _HAYSTACK_CACHE.pop(k, None)
+    _HAYSTACK_CACHE[key] = h
+    return h
 
 
 def _matches(haystack: str, keywords: Iterable[str]) -> bool:
@@ -175,9 +206,13 @@ def documents_for_topic(slug: str, docs: Iterable[DocumentRecord]) -> List[Docum
 
 def topic_counts(docs: Iterable[DocumentRecord]) -> Dict[str, int]:
     docs_list = list(docs)
-    counts: Dict[str, int] = {}
-    for t in TOPIC_CATALOG:
-        counts[t.slug] = sum(1 for d in docs_list if _matches(_haystack(d), t.keywords))
+    # Build the haystack once per document, then test each topic against it.
+    counts: Dict[str, int] = {t.slug: 0 for t in TOPIC_CATALOG}
+    for d in docs_list:
+        h = _haystack(d)
+        for t in TOPIC_CATALOG:
+            if _matches(h, t.keywords):
+                counts[t.slug] += 1
     return counts
 
 

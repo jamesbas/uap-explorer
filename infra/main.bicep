@@ -85,8 +85,11 @@ param frontendCpu string = '0.25'
 @description('Frontend memory (per replica).')
 param frontendMemory string = '0.5Gi'
 
-@description('Min/max replicas.')
-param minReplicas int = 0
+@description('Backend min replicas. Set to 1 to keep a warm replica and avoid cold-start latency.')
+param backendMinReplicas int = 1
+@description('Frontend min replicas. Frontend cold start is short, so 0 is usually fine.')
+param frontendMinReplicas int = 0
+@description('Max replicas (applies to both apps).')
 param maxReplicas int = 2
 
 // ---------------------------------------------------------------------
@@ -329,7 +332,7 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: minReplicas
+        minReplicas: backendMinReplicas
         maxReplicas: maxReplicas
       }
     }
@@ -388,7 +391,7 @@ resource frontendApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: minReplicas
+        minReplicas: frontendMinReplicas
         maxReplicas: maxReplicas
       }
     }

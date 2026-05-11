@@ -21,15 +21,24 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div>
-          <h1>
-            <Link to="/" style={{ color: "inherit" }}>
-              UAP Explorer
-            </Link>
-          </h1>
-          <div className="subtitle">
-            A source-grounded archive of government-released Unidentified Anomalous
-            Phenomena records.
+        <div className="app-brand">
+          <Link to="/" className="app-brand-link" aria-label="UAP Explorer home">
+            <img
+              src="/uap-explorer-logo.png"
+              alt="UAP Explorer logo"
+              className="app-logo"
+            />
+          </Link>
+          <div className="app-brand-text">
+            <h1>
+              <Link to="/" style={{ color: "inherit" }}>
+                UAP Explorer
+              </Link>
+            </h1>
+            <div className="subtitle">
+              A source-grounded archive of government-released Unidentified Anomalous
+              Phenomena records.
+            </div>
           </div>
         </div>
         <nav className="nav">

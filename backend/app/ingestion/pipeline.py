@@ -54,6 +54,78 @@ def _select_documents(document_ids: Optional[List[str]], max_docs: int) -> List[
     return chosen[: max(0, max_docs)]
 
 
+def _list_indexed_document_ids() -> set[str]:
+    """Return the set of document_ids that already have chunks in the search index."""
+    try:
+        client = search_index.search_client()
+    except Exception:
+        return set()
+    seen: set[str] = set()
+    try:
+        results = client.search(
+            search_text="*",
+            facets=["document_id,count:10000"],
+            top=0,
+        )
+        # Touch results so the response is materialized, then read facets.
+        try:
+            list(results)  # may yield nothing because top=0
+        except Exception:
+            pass
+        facets = results.get_facets() or {}
+        for entry in facets.get("document_id", []) or []:
+            v = entry.get("value")
+            if v:
+                seen.add(v)
+    except Exception:
+        pass
+    if seen:
+        return seen
+    # Fallback: paginate through chunks pulling distinct document_ids.
+    try:
+        results = client.search(
+            search_text="*", select=["document_id"], top=1000
+        )
+        for r in results:
+            v = r.get("document_id") if isinstance(r, dict) else getattr(r, "document_id", None)
+            if v:
+                seen.add(v)
+    except Exception:
+        pass
+    return seen
+
+
+def _select_documents_for_summaries(
+    document_ids: Optional[List[str]], max_docs: int
+) -> List[DocumentRecord]:
+    """Selection for summaries-only mode: include any PDF with text available
+    via cached extraction, local file, OR existing chunks in the search index.
+    """
+    docs = store.documents
+    if document_ids:
+        return [d for d in docs if d.document_id in set(document_ids)][: max(0, max_docs)]
+
+    indexed_ids = _list_indexed_document_ids()
+
+    def _has_text(d: DocumentRecord) -> bool:
+        if d.local_file_path and Path(d.local_file_path).exists():
+            return True
+        if (EXTRACTED_DIR / f"{d.document_id}.json").exists():
+            return True
+        return d.document_id in indexed_ids
+
+    candidates = [d for d in docs if (d.file_type or "").lower() == "pdf" and _has_text(d)]
+
+    def _size(d: DocumentRecord) -> int:
+        try:
+            return Path(d.local_file_path).stat().st_size if d.local_file_path else 1 << 62
+        except Exception:
+            return 1 << 62
+
+    candidates.sort(key=_size)
+    return candidates[: max(0, max_docs)]
+
+
 def _filename_from(doc: DocumentRecord) -> Optional[str]:
     if doc.local_file_path:
         return Path(doc.local_file_path).name
@@ -195,12 +267,31 @@ def _load_cached_extracted_text(doc_id: str) -> Optional[str]:
         return None
 
 
+def _load_text_from_search_index(doc_id: str, max_chunks: int = 400) -> Optional[str]:
+    """Reconstruct document text from chunks already indexed in Azure AI Search.
+
+    Used as a fallback when neither the local PDF nor the cached extraction
+    JSON is available (e.g. the deployed container that only has access to
+    the search index, not the original PDFs).
+    """
+    try:
+        chunks = search_index.get_document_chunks(doc_id, max_chunks=max_chunks)
+    except Exception:
+        return None
+    if not chunks:
+        return None
+    text = "\n\n".join((c.get("content") or "") for c in chunks).strip()
+    return text or None
+
+
 def _process_one_summary_only(doc: DocumentRecord, regenerate: bool) -> None:
     """Generate (or regenerate) only the AI summary for one document.
 
-    Skips blob upload, chunking, embedding, and search-index writes. Reuses
-    the cached extracted text if available; otherwise re-extracts from the
-    local file (still no blob/index side effects).
+    Skips blob upload, chunking, embedding, and search-index writes. Sources
+    the document text in this order:
+      1. Cached extraction JSON in data/processed/extracted/.
+      2. Local PDF on disk (re-extracts and caches).
+      3. Chunks already stored in Azure AI Search (deployed-container path).
     """
     status.set_current(doc.title)
     status.log(f"Summary-only: {doc.title}")
@@ -214,31 +305,37 @@ def _process_one_summary_only(doc: DocumentRecord, regenerate: bool) -> None:
         return
 
     full_text = _load_cached_extracted_text(doc.document_id)
-    if not full_text:
-        if not doc.local_file_path or not Path(doc.local_file_path).exists():
-            status.record_skipped(f"no cached text and local file missing: {doc.title}")
-            return
+    if not full_text and doc.local_file_path and Path(doc.local_file_path).exists():
         try:
             pages = extract_pages(Path(doc.local_file_path), use_doc_intelligence=True)
         except Exception as e:  # noqa: BLE001
             status.record_error(doc.document_id, doc.title, f"extraction failed: {e}")
             return
         full_text = "\n\n".join(t for _, t in pages if t).strip()
-        if not full_text:
-            status.record_error(doc.document_id, doc.title, "no extractable text (empty pages)")
-            return
-        # Cache extracted text so a future summaries-only run is free.
-        try:
-            (EXTRACTED_DIR / f"{doc.document_id}.json").write_text(
-                json.dumps(
-                    {"document_id": doc.document_id, "title": doc.title,
-                     "pages": [{"page": p, "text": t} for p, t in pages]},
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+        if full_text:
+            try:
+                (EXTRACTED_DIR / f"{doc.document_id}.json").write_text(
+                    json.dumps(
+                        {"document_id": doc.document_id, "title": doc.title,
+                         "pages": [{"page": p, "text": t} for p, t in pages]},
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
+    if not full_text:
+        # Last-resort fallback: pull the chunked text back out of the search index.
+        full_text = _load_text_from_search_index(doc.document_id)
+        if full_text:
+            status.log(f"  using text reconstructed from search index for {doc.title}")
+
+    if not full_text:
+        status.record_skipped(
+            f"no text available (no local file, no cached extraction, no indexed chunks): {doc.title}"
+        )
+        return
 
     try:
         summary = _generate_summary(doc, full_text)
@@ -339,7 +436,10 @@ def run_ingestion(
 
     try:
         cap = max_docs if max_docs is not None else settings.ingestion_max_docs
-        targets = _select_documents(document_ids, cap)
+        if summaries_only:
+            targets = _select_documents_for_summaries(document_ids, cap)
+        else:
+            targets = _select_documents(document_ids, cap)
         mode = "summaries-only" if summaries_only else "api"
         status.begin_run(target_count=len(targets), max_docs=cap, mode=mode)
 

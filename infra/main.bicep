@@ -99,6 +99,10 @@ var envName = 'cae-${namePrefix}'
 var uamiName = 'id-${namePrefix}'
 var backendAppName = 'ca-${namePrefix}-backend'
 var frontendAppName = 'ca-${namePrefix}-frontend'
+// Storage account name: 3-24 chars, lowercase letters/digits only.
+var appDataStorageAccountName = toLower(substring('st${namePrefix}${unique}', 0, 24))
+var appDataShareName = 'appdata'
+var appDataEnvStorageName = 'appdata'
 
 // ---------------------------------------------------------------------
 // Log Analytics workspace
@@ -145,6 +149,39 @@ resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 // ---------------------------------------------------------------------
+// Storage account + Azure Files share for persistent backend data
+// (mounted into the backend Container App at /app/data so generated
+// reports, summaries, extracted JSON, and ingestion status survive
+// container restarts, revision updates, and replica churn).
+// ---------------------------------------------------------------------
+resource appDataStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: appDataStorageAccountName
+  location: location
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+  properties: {
+    accessTier: 'Hot'
+    allowBlobPublicAccess: false
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+resource appDataFileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = {
+  parent: appDataStorage
+  name: 'default'
+}
+
+resource appDataShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = {
+  parent: appDataFileService
+  name: appDataShareName
+  properties: {
+    accessTier: 'TransactionOptimized'
+    shareQuota: 100
+  }
+}
+
+// ---------------------------------------------------------------------
 // Container Apps Environment
 // ---------------------------------------------------------------------
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
@@ -164,6 +201,21 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
         workloadProfileType: 'Consumption'
       }
     ]
+  }
+}
+
+// Register the Azure Files share with the Container Apps Environment so
+// container apps in this env can mount it as a volume.
+resource envAppDataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
+  parent: env
+  name: appDataEnvStorageName
+  properties: {
+    azureFile: {
+      accountName: appDataStorage.name
+      accountKey: appDataStorage.listKeys().keys[0].value
+      shareName: appDataShare.name
+      accessMode: 'ReadWrite'
+    }
   }
 }
 
@@ -261,6 +313,19 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
               periodSeconds: 15
             }
           ]
+          volumeMounts: [
+            {
+              volumeName: 'appdata'
+              mountPath: '/app/data/processed'
+            }
+          ]
+        }
+      ]
+      volumes: [
+        {
+          name: 'appdata'
+          storageType: 'AzureFile'
+          storageName: appDataEnvStorageName
         }
       ]
       scale: {
@@ -271,6 +336,7 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
   }
   dependsOn: [
     acrPull
+    envAppDataStorage
   ]
 }
 
@@ -343,3 +409,5 @@ output backendInternalFqdn string = backendApp.properties.configuration.ingress.
 output frontendUrl string = 'https://${frontendApp.properties.configuration.ingress.fqdn}'
 output uamiId string = uami.id
 output uamiPrincipalId string = uami.properties.principalId
+output appDataStorageAccount string = appDataStorage.name
+output appDataShareName string = appDataShare.name

@@ -238,10 +238,6 @@ export default function RecordDetailPage() {
                 : "Loading summary…"}
             </div>
           )}
-
-          <div className="placeholder-box">
-            <strong>Coming in Phase 3:</strong> Related records.
-          </div>
         </div>
       </div>
     </div>

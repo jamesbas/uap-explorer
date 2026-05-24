@@ -176,6 +176,39 @@ export function recreateIndex(): Promise<unknown> {
   return request("/api/admin/index/recreate", { method: "POST", admin: true });
 }
 
+// --- Azure-native pull indexer (search_indexer) ---
+export interface SearchIndexerStatus {
+  exists: boolean;
+  status?: string;
+  last_result?: {
+    status?: string;
+    errorMessage?: string | null;
+    startTime?: string | null;
+    endTime?: string | null;
+    itemsProcessed?: number;
+    itemsFailed?: number;
+    errors?: Array<{ key?: string; errorMessage?: string }>;
+    warnings?: Array<{ key?: string; message?: string }>;
+  };
+  execution_history_count?: number;
+}
+
+export function searchIndexerSetup(): Promise<Record<string, string>> {
+  return request("/api/admin/search-indexer/setup", { method: "POST", admin: true });
+}
+
+export function searchIndexerRun(): Promise<{ started: boolean; indexer: string }> {
+  return request("/api/admin/search-indexer/run", { method: "POST", admin: true });
+}
+
+export function searchIndexerStatus(): Promise<SearchIndexerStatus> {
+  return request<SearchIndexerStatus>("/api/admin/search-indexer/status", { admin: true });
+}
+
+export function searchIndexerReset(): Promise<{ reset: boolean; indexer: string }> {
+  return request("/api/admin/search-indexer/reset", { method: "POST", admin: true });
+}
+
 // --- Phase 3 ---
 export function fetchMap(): Promise<MapResponse> {
   return getJson<MapResponse>("/api/map");

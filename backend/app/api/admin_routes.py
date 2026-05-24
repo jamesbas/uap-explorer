@@ -18,7 +18,7 @@ from ..models import (
     LoginRequest,
     LoginResponse,
 )
-from ..services import search_index
+from ..services import search_index, search_indexer
 from ..services.ask_service import ask as run_ask
 from ..services.store import store
 
@@ -129,3 +129,48 @@ def document_chunks(document_id: str, max_chunks: int = 50) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"Search unavailable: {e}")
     return {"document_id": document_id, "count": len(chunks), "chunks": chunks}
+
+
+# -------------------------------------------------- Azure-native pull indexer
+# These endpoints manage an Azure AI Search indexer pipeline that pulls PDFs
+# straight from the blob container, runs Document Intelligence Layout, splits,
+# vectorizes with Azure OpenAI, and writes a parallel v2 index. Independent of
+# the in-process ingestion pipeline above.
+@router.post("/api/admin/search-indexer/setup")
+def search_indexer_setup(_: None = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return search_indexer.setup_all()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Setup failed: {e}")
+
+
+@router.post("/api/admin/search-indexer/run")
+def search_indexer_run(_: None = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return search_indexer.run()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Run failed: {e}")
+
+
+@router.get("/api/admin/search-indexer/status")
+def search_indexer_status(_: None = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return search_indexer.status()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Status failed: {e}")
+
+
+@router.post("/api/admin/search-indexer/reset")
+def search_indexer_reset(_: None = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return search_indexer.reset()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Reset failed: {e}")
+
+
+@router.post("/api/admin/search-indexer/teardown")
+def search_indexer_teardown(_: None = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return search_indexer.teardown()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Teardown failed: {e}")

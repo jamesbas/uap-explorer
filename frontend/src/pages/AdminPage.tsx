@@ -9,10 +9,15 @@ import {
   logout,
   recreateIndex,
   resetIngestionStatus,
+  searchIndexerReset,
+  searchIndexerRun,
+  searchIndexerSetup,
+  searchIndexerStatus,
   setAdminToken,
   startIngestion,
 } from "../services/api";
 import type { IndexStats, IngestionStatus } from "../types/models";
+import type { SearchIndexerStatus } from "../services/api";
 
 function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   const [pwd, setPwd] = useState("");
@@ -67,15 +72,18 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
   const [regenerateSummaries, setRegenerateSummaries] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [siStatus, setSiStatus] = useState<SearchIndexerStatus | null>(null);
 
   async function refresh() {
     try {
-      const [s, idx] = await Promise.all([
+      const [s, idx, si] = await Promise.all([
         fetchIngestionStatus(),
         fetchIndexInfo().catch(() => null),
+        searchIndexerStatus().catch(() => null),
       ]);
       setStatus(s);
       if (idx) setIndexInfo(idx);
+      if (si) setSiStatus(si);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -146,6 +154,47 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
     try {
       await resetIngestionStatus();
       setActionMsg("Ingestion status reset. Run buttons should be enabled.");
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function handleSiSetup() {
+    setActionMsg(null);
+    try {
+      const r = await searchIndexerSetup();
+      setActionMsg(
+        `Pull indexer set up: ${r.indexer} → ${r.skillset} → ${r.index_v2}`,
+      );
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function handleSiRun() {
+    setActionMsg(null);
+    try {
+      await searchIndexerRun();
+      setActionMsg("Pull indexer run started (Azure-side).");
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function handleSiReset() {
+    if (
+      !confirm(
+        "Reset pull indexer change tracking?\n\nThe next run will re-process every PDF in the blob container from scratch.",
+      )
+    )
+      return;
+    setActionMsg(null);
+    try {
+      await searchIndexerReset();
+      setActionMsg("Pull indexer change tracking cleared. Next run will be a full re-index.");
       refresh();
     } catch (e) {
       setError(String(e));
@@ -243,6 +292,64 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
             Cancel run / reset status
           </button>
         </div>
+      </div>
+
+      <h3 style={{ marginTop: 24 }}>Azure-native pull indexer (experimental)</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Runs the entire ingest inside Azure AI Search: blob → native PDF parse → chunk → vectorize (integrated). Writes a parallel <code>uap-explorer-chunks-v2</code> index. No app-side extraction, so no hangs on huge files. Scanned PDFs without embedded text won't yield content via this path (would need OCR).
+      </p>
+      <div className="card">
+        <div className="meta">
+          <span className="tag">
+            {siStatus?.exists ? siStatus.status || "—" : "not configured"}
+          </span>
+          {siStatus?.last_result && (
+            <>
+              <span><strong>Last run:</strong> {siStatus.last_result.status || "—"}</span>
+              <span><strong>Started:</strong> {siStatus.last_result.startTime || "—"}</span>
+              <span><strong>Ended:</strong> {siStatus.last_result.endTime || "—"}</span>
+            </>
+          )}
+        </div>
+        {siStatus?.last_result && (
+          <div className="meta">
+            <span><strong>Items processed:</strong> {siStatus.last_result.itemsProcessed ?? 0}</span>
+            <span><strong>Items failed:</strong> {siStatus.last_result.itemsFailed ?? 0}</span>
+            <span><strong>History:</strong> {siStatus.execution_history_count ?? 0} runs</span>
+          </div>
+        )}
+        {siStatus?.last_result?.errorMessage && (
+          <p className="error">{siStatus.last_result.errorMessage}</p>
+        )}
+        <div className="actions">
+          <button className="button secondary" onClick={handleSiSetup}>
+            Set up / update pipeline
+          </button>
+          <button
+            className="button"
+            disabled={siStatus?.status === "running"}
+            onClick={handleSiRun}
+          >
+            Run pull indexer
+          </button>
+          <button className="button secondary" onClick={handleSiReset}>
+            Reset change tracking
+          </button>
+        </div>
+        {!!siStatus?.last_result?.errors?.length && (
+          <>
+            <p className="muted" style={{ marginTop: 8, marginBottom: 4 }}>
+              <strong>Recent errors (first 20):</strong>
+            </p>
+            <ul style={{ fontSize: 12 }}>
+              {siStatus.last_result.errors.map((e, i) => (
+                <li key={i}>
+                  <strong>{e.key || "—"}:</strong> {e.errorMessage}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
       </div>
 
       {status && (

@@ -79,6 +79,15 @@ class Settings:
     ingestion_max_docs: int = int(os.getenv("INGESTION_MAX_DOCS", "30"))
     chunk_chars: int = int(os.getenv("INGESTION_CHUNK_CHARS", "1500"))
     chunk_overlap: int = int(os.getenv("INGESTION_CHUNK_OVERLAP", "200"))
+    # Files larger than this are skipped by the ingestion pipeline rather
+    # than risk hanging pypdf / Doc Intelligence. They can be processed
+    # offline with a dedicated splitter.
+    ingestion_max_pdf_mb: int = int(os.getenv("INGESTION_MAX_PDF_MB", "80"))
+    # Wall-clock cap on the entire extract_pages() call (pypdf + DI).
+    # Acts as a safety net beyond the per-service timeouts.
+    ingestion_extract_timeout_seconds: int = int(
+        os.getenv("INGESTION_EXTRACT_TIMEOUT_SECONDS", "420")
+    )
 
     @property
     def use_managed_identity(self) -> bool:

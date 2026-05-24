@@ -11,6 +11,7 @@ For each selected document:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import tempfile
@@ -425,6 +426,24 @@ def _process_one(doc: DocumentRecord) -> None:
         status.log(f"  using blob source for {doc.title}")
 
     try:
+        # Skip files that are too large to process safely. pypdf and Doc
+        # Intelligence both have practical limits; very large scanned PDFs
+        # (e.g. multi-hundred-MB FBI case files) can hang the worker
+        # indefinitely. Process those offline via a dedicated splitter.
+        try:
+            size_bytes = source_path.stat().st_size
+        except OSError:
+            size_bytes = 0
+        size_mb = size_bytes / (1024 * 1024)
+        if (
+            settings.ingestion_max_pdf_mb > 0
+            and size_mb > settings.ingestion_max_pdf_mb
+        ):
+            status.record_skipped(
+                f"file too large ({size_mb:.1f} MB > {settings.ingestion_max_pdf_mb} MB): {doc.title}"
+            )
+            return
+
         # Blob upload (best-effort, non-fatal). Skipped when the source itself
         # came from blob — it's already there.
         if not from_blob:
@@ -433,9 +452,22 @@ def _process_one(doc: DocumentRecord) -> None:
             except Exception as e:  # noqa: BLE001
                 status.log(f"Blob upload failed for {doc.title}: {e}")
 
-        # Extract
+        # Extract — wrapped in a wall-clock timeout so a misbehaving PDF
+        # cannot hang the entire ingestion run. If the future times out
+        # we abandon it (the worker thread may keep running in the
+        # background but the run continues with the next doc).
+        timeout_s = max(60, settings.ingestion_extract_timeout_seconds)
         try:
-            pages = extract_pages(source_path, use_doc_intelligence=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(extract_pages, source_path, True)
+                pages = fut.result(timeout=timeout_s)
+        except concurrent.futures.TimeoutError:
+            status.record_error(
+                doc.document_id,
+                doc.title,
+                f"extraction timed out after {timeout_s}s ({size_mb:.1f} MB)",
+            )
+            return
         except Exception as e:  # noqa: BLE001
             status.record_error(doc.document_id, doc.title, f"extraction failed: {e}")
             return

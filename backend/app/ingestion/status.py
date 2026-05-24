@@ -130,3 +130,21 @@ def end_run(summary: str) -> None:
         state["last_run_summary"] = summary
         state["log"].append(f"[{_now()}] {summary}")
         _save(state)
+
+
+def reset() -> Dict[str, Any]:
+    """Force the persisted status back to an idle/empty state.
+
+    Use this to recover from a stuck `running: true` flag when a worker
+    thread has died without calling `end_run` (e.g. container restart in
+    the middle of a run, or a hung Document Intelligence poller).
+
+    NOTE: This does NOT kill any worker thread that might still be alive
+    in-process; it only clears the persisted state file. Pair it with a
+    container restart if you suspect a zombie worker.
+    """
+    with _LOCK:
+        state = _empty_state()
+        state["log"].append(f"[{_now()}] Status reset via admin.")
+        _save(state)
+        return state

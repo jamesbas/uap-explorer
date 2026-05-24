@@ -8,6 +8,7 @@ import {
   login,
   logout,
   recreateIndex,
+  resetIngestionStatus,
   setAdminToken,
   startIngestion,
 } from "../services/api";
@@ -134,6 +135,23 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
     }
   }
 
+  async function handleResetStatus() {
+    if (
+      !confirm(
+        "Reset ingestion status?\n\nThis clears the persisted 'running' flag so the Run buttons re-enable. Use this only if a previous run is genuinely stuck (log has stopped advancing). It does NOT kill a still-running worker thread.",
+      )
+    )
+      return;
+    setActionMsg(null);
+    try {
+      await resetIngestionStatus();
+      setActionMsg("Ingestion status reset. Run buttons should be enabled.");
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -216,6 +234,13 @@ function AdminConsole({ onLogout }: { onLogout: () => void }) {
             onClick={() => handleStart({ full: true, summariesOnly: true })}
           >
             Generate summaries only (all docs)
+          </button>
+          <button
+            className="button secondary"
+            title="Force-clear a stuck 'running' status flag. Use only if a previous run is hung (log not advancing for many minutes)."
+            onClick={handleResetStatus}
+          >
+            Cancel run / reset status
           </button>
         </div>
       </div>

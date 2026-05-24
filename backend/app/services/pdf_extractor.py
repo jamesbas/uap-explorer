@@ -31,8 +31,17 @@ def extract_with_pypdf(pdf_path: Path) -> List[Tuple[int, str]]:
     return pages
 
 
-def extract_with_doc_intelligence(pdf_bytes: bytes) -> List[Tuple[int, str]]:
-    """Use Doc Intelligence prebuilt-read for OCR-quality extraction."""
+def extract_with_doc_intelligence(
+    pdf_bytes: bytes,
+    timeout_seconds: int = 300,
+) -> List[Tuple[int, str]]:
+    """Use Doc Intelligence prebuilt-read for OCR-quality extraction.
+
+    The poller is given a hard ``timeout_seconds`` cap so that pathological
+    inputs (very large scanned PDFs, service throttling) cannot hang the
+    ingestion worker forever. On timeout the SDK raises and the caller
+    falls back to the pypdf result.
+    """
     from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 
     client = document_intelligence_client()
@@ -40,7 +49,7 @@ def extract_with_doc_intelligence(pdf_bytes: bytes) -> List[Tuple[int, str]]:
         "prebuilt-read",
         AnalyzeDocumentRequest(bytes_source=pdf_bytes),
     )
-    result = poller.result()
+    result = poller.result(timeout=timeout_seconds)
     pages: List[Tuple[int, str]] = []
     for page in result.pages or []:
         lines = [ln.content for ln in (page.lines or [])]

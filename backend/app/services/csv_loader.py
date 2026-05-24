@@ -61,7 +61,11 @@ def _infer_file_type(raw_type: Optional[str], source_url: Optional[str]) -> Opti
 
 
 def _local_path_for(source_url: Optional[str], file_root: Path) -> Optional[str]:
-    """If a matching local file exists for the given URL, return its absolute path."""
+    """If a matching local file exists for the given URL, return its absolute path.
+
+    Searches `file_root` first, then any additional roots configured via
+    settings.file_roots (e.g. ufo_release_02_files/ for newer tranches).
+    """
     if not source_url:
         return None
     try:
@@ -70,9 +74,22 @@ def _local_path_for(source_url: Optional[str], file_root: Path) -> Optional[str]
         return None
     if not filename:
         return None
-    candidate = file_root / filename
-    if candidate.exists():
-        return str(candidate)
+
+    # Build search list: primary root first, then any extras from settings,
+    # de-duplicated while preserving order.
+    roots: list[Path] = [file_root]
+    try:
+        from ..config import settings  # local import to avoid cycles at module load
+        for extra in settings.file_roots:
+            if extra not in roots:
+                roots.append(extra)
+    except Exception:
+        pass
+
+    for root in roots:
+        candidate = root / filename
+        if candidate.exists():
+            return str(candidate)
     return None
 
 

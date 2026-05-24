@@ -33,6 +33,16 @@ class Settings:
     # Data paths
     csv_path: Path = _resolve(os.getenv("UAP_CSV_PATH"), "data/source/uap-csv.csv")
     file_root: Path = _resolve(os.getenv("UAP_FILE_ROOT"), "ufo_release_01_files")
+    # Additional release folders to search when resolving a record's local file.
+    # Comma-separated env var; defaults include both known release folders.
+    file_roots: list[Path] = [
+        _resolve(p, p)
+        for p in (
+            os.getenv("UAP_FILE_ROOTS")
+            or "ufo_release_01_files,ufo_release_02_files"
+        ).split(",")
+        if p.strip()
+    ]
     processed_root: Path = _resolve(os.getenv("UAP_PROCESSED_ROOT"), "data/processed")
 
     # Admin

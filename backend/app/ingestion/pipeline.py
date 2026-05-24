@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 import threading
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ..config import settings
 from ..models import DocumentRecord
@@ -31,6 +32,58 @@ EXTRACTED_DIR = settings.processed_root / "extracted"
 
 _RUN_LOCK = threading.Lock()
 
+# Populated at the start of each run with the set of blob names currently in
+# the uap-files container. Lets selection + extraction fall back to blob when
+# the deployed container has no local copy of the PDF.
+_BLOB_NAMES: set[str] = set()
+
+
+def _refresh_blob_index() -> set[str]:
+    global _BLOB_NAMES
+    try:
+        _BLOB_NAMES = set(blob_storage.list_blobs())
+    except Exception as e:  # noqa: BLE001
+        status.log(f"Blob listing unavailable: {e}")
+        _BLOB_NAMES = set()
+    return _BLOB_NAMES
+
+
+def _has_source(doc: DocumentRecord) -> bool:
+    """True if we can obtain the original file via local disk OR blob."""
+    if doc.local_file_path and Path(doc.local_file_path).exists():
+        return True
+    name = _filename_from(doc)
+    return bool(name and name in _BLOB_NAMES)
+
+
+def _resolve_source(doc: DocumentRecord) -> Tuple[Optional[Path], Optional[Path], bool]:
+    """Return (source_path, temp_path_to_cleanup, already_in_blob).
+
+    Prefers local disk. Falls back to streaming the blob into a temp file.
+    """
+    if doc.local_file_path:
+        p = Path(doc.local_file_path)
+        if p.exists():
+            return p, None, False
+
+    name = _filename_from(doc)
+    if not name or name not in _BLOB_NAMES:
+        return None, None, False
+
+    try:
+        data = blob_storage.download_blob_bytes(name)
+    except Exception as e:  # noqa: BLE001
+        status.log(f"  blob download failed for {name}: {e}")
+        return None, None, False
+
+    suffix = Path(name).suffix or ".pdf"
+    tf = tempfile.NamedTemporaryFile(prefix="uap-blob-", suffix=suffix, delete=False)
+    try:
+        tf.write(data)
+    finally:
+        tf.close()
+    return Path(tf.name), Path(tf.name), True
+
 
 # --------------------------------------------------------------------- helpers
 def _select_documents(document_ids: Optional[List[str]], max_docs: int) -> List[DocumentRecord]:
@@ -38,17 +91,20 @@ def _select_documents(document_ids: Optional[List[str]], max_docs: int) -> List[
     if document_ids:
         chosen = [d for d in docs if d.document_id in set(document_ids)]
     else:
-        # Default selection: PDFs we already have on disk, smallest first so
-        # quick wins happen before the large scanned files.
-        candidates = [d for d in docs if (d.file_type or "") == "pdf" and d.local_file_path]
+        # Default selection: PDFs we can obtain a source file for, either from
+        # local disk OR from the blob container. Smallest first so quick wins
+        # happen before the large scanned files.
+        candidates = [d for d in docs if (d.file_type or "") == "pdf" and _has_source(d)]
         if not candidates:
-            candidates = [d for d in docs if d.local_file_path]
+            candidates = [d for d in docs if _has_source(d)]
 
         def _size(d: DocumentRecord) -> int:
             try:
-                return Path(d.local_file_path).stat().st_size if d.local_file_path else 1 << 62
+                if d.local_file_path and Path(d.local_file_path).exists():
+                    return Path(d.local_file_path).stat().st_size
             except Exception:
-                return 1 << 62
+                pass
+            return 1 << 62  # blob-only files sort last (size unknown)
 
         chosen = sorted(candidates, key=_size)
     return chosen[: max(0, max_docs)]
@@ -112,7 +168,10 @@ def _select_documents_for_summaries(
             return True
         if (EXTRACTED_DIR / f"{d.document_id}.json").exists():
             return True
-        return d.document_id in indexed_ids
+        if d.document_id in indexed_ids:
+            return True
+        name = _filename_from(d)
+        return bool(name and name in _BLOB_NAMES)
 
     candidates = [d for d in docs if (d.file_type or "").lower() == "pdf" and _has_text(d)]
 
@@ -355,72 +414,87 @@ def _process_one(doc: DocumentRecord) -> None:
         status.record_skipped(f"non-PDF file type: {doc.title}")
         return
 
-    if not doc.local_file_path or not Path(doc.local_file_path).exists():
-        status.record_skipped(f"local file missing for: {doc.title}")
-        return
-
-    # Blob upload (best-effort, non-fatal)
-    try:
-        _ensure_uploaded(doc)
-    except Exception as e:  # noqa: BLE001
-        status.log(f"Blob upload failed for {doc.title}: {e}")
-
-    # Extract
-    try:
-        pages = extract_pages(Path(doc.local_file_path), use_doc_intelligence=True)
-    except Exception as e:  # noqa: BLE001
-        status.record_error(doc.document_id, doc.title, f"extraction failed: {e}")
-        return
-    full_text = "\n\n".join(t for _, t in pages if t)
-    if not full_text.strip():
-        status.record_error(doc.document_id, doc.title, "no extractable text (empty pages)")
-        return
-
-    # Cache extracted text
-    try:
-        (EXTRACTED_DIR / f"{doc.document_id}.json").write_text(
-            json.dumps(
-                {"document_id": doc.document_id, "title": doc.title,
-                 "pages": [{"page": p, "text": t} for p, t in pages]},
-                indent=2,
-            ),
-            encoding="utf-8",
+    source_path, temp_path, from_blob = _resolve_source(doc)
+    if source_path is None:
+        status.record_skipped(
+            f"no source available (no local file, no blob): {doc.title}"
         )
-    except Exception:
-        pass
-
-    # Chunks + embeddings
-    chunks = _build_chunks(doc, pages)
-    if not chunks:
-        status.record_error(doc.document_id, doc.title, "no chunks produced")
         return
 
-    status.log(f"  → {len(chunks)} chunks; embedding…")
-    embeddings = openai_service.embed_texts([c["content"] for c in chunks])
-    # Token estimate for embeddings
-    est_tokens = sum(openai_service.count_tokens(c["content"]) for c in chunks)
-    status.add_tokens(embedding=est_tokens)
+    if from_blob:
+        status.log(f"  using blob source for {doc.title}")
 
-    for c, vec in zip(chunks, embeddings):
-        c["content_vector"] = vec
-
-    # Upsert into search index (replace prior chunks for this doc)
     try:
-        search_index.delete_document_chunks(doc.document_id)
-    except Exception as e:  # noqa: BLE001
-        status.log(f"  prior-chunk delete failed for {doc.title}: {e}")
-    search_index.upload_chunks(chunks)
-    status.log(f"  → indexed {len(chunks)} chunks for {doc.title}")
+        # Blob upload (best-effort, non-fatal). Skipped when the source itself
+        # came from blob — it's already there.
+        if not from_blob:
+            try:
+                _ensure_uploaded(doc)
+            except Exception as e:  # noqa: BLE001
+                status.log(f"Blob upload failed for {doc.title}: {e}")
 
-    # Summary
-    try:
-        summary = _generate_summary(doc, full_text)
-        _save_summary(doc.document_id, summary)
-        status.log(f"  → summary cached for {doc.title}")
-    except Exception as e:  # noqa: BLE001
-        status.log(f"  summary failed for {doc.title}: {e}")
+        # Extract
+        try:
+            pages = extract_pages(source_path, use_doc_intelligence=True)
+        except Exception as e:  # noqa: BLE001
+            status.record_error(doc.document_id, doc.title, f"extraction failed: {e}")
+            return
+        full_text = "\n\n".join(t for _, t in pages if t)
+        if not full_text.strip():
+            status.record_error(doc.document_id, doc.title, "no extractable text (empty pages)")
+            return
 
-    status.record_completed()
+        # Cache extracted text
+        try:
+            (EXTRACTED_DIR / f"{doc.document_id}.json").write_text(
+                json.dumps(
+                    {"document_id": doc.document_id, "title": doc.title,
+                     "pages": [{"page": p, "text": t} for p, t in pages]},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+        # Chunks + embeddings
+        chunks = _build_chunks(doc, pages)
+        if not chunks:
+            status.record_error(doc.document_id, doc.title, "no chunks produced")
+            return
+
+        status.log(f"  → {len(chunks)} chunks; embedding…")
+        embeddings = openai_service.embed_texts([c["content"] for c in chunks])
+        # Token estimate for embeddings
+        est_tokens = sum(openai_service.count_tokens(c["content"]) for c in chunks)
+        status.add_tokens(embedding=est_tokens)
+
+        for c, vec in zip(chunks, embeddings):
+            c["content_vector"] = vec
+
+        # Upsert into search index (replace prior chunks for this doc)
+        try:
+            search_index.delete_document_chunks(doc.document_id)
+        except Exception as e:  # noqa: BLE001
+            status.log(f"  prior-chunk delete failed for {doc.title}: {e}")
+        search_index.upload_chunks(chunks)
+        status.log(f"  → indexed {len(chunks)} chunks for {doc.title}")
+
+        # Summary
+        try:
+            summary = _generate_summary(doc, full_text)
+            _save_summary(doc.document_id, summary)
+            status.log(f"  → summary cached for {doc.title}")
+        except Exception as e:  # noqa: BLE001
+            status.log(f"  summary failed for {doc.title}: {e}")
+
+        status.record_completed()
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def run_ingestion(
@@ -436,6 +510,7 @@ def run_ingestion(
 
     try:
         cap = max_docs if max_docs is not None else settings.ingestion_max_docs
+        _refresh_blob_index()
         if summaries_only:
             targets = _select_documents_for_summaries(document_ids, cap)
         else:

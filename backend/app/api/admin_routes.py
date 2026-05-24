@@ -62,6 +62,18 @@ def ingestion_run(
     )
 
 
+@router.post("/api/ingestion/reset")
+def ingestion_reset(_: None = Depends(require_admin)) -> dict:
+    """Clear a stuck ingestion status flag.
+
+    Resets the persisted status file to an idle state so the admin UI
+    re-enables the Run buttons. Does not kill an in-process worker —
+    use sparingly, only after confirming the run is genuinely hung
+    (e.g. log has stopped advancing for many minutes).
+    """
+    return ingestion_status.reset()
+
+
 # ----------------------------------------------------------------- Index mgmt
 @router.get("/api/admin/index")
 def index_info(_: None = Depends(require_admin)) -> dict:

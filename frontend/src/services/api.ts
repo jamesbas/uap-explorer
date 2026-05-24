@@ -157,6 +157,13 @@ export function startIngestion(opts: {
   });
 }
 
+export function resetIngestionStatus(): Promise<IngestionStatus> {
+  return request<IngestionStatus>("/api/ingestion/reset", {
+    method: "POST",
+    admin: true,
+  });
+}
+
 export function fetchIndexInfo(): Promise<IndexStats> {
   return request<IndexStats>("/api/admin/index", { admin: true });
 }

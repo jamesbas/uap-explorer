@@ -111,8 +111,8 @@ def ask(req: AskRequest) -> AskResponse:
     citations = [
         Citation(
             index=i + 1,
-            chunk_id=h.get("chunk_id", ""),
-            document_id=h.get("document_id", ""),
+            chunk_id=h.get("chunk_id", "") or "",
+            document_id=h.get("document_id") or "",
             title=h.get("title") or "Untitled",
             page_number=h.get("page_number"),
             agency=h.get("agency"),

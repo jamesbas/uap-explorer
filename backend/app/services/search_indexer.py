@@ -120,56 +120,86 @@ def _data_source_def() -> Dict[str, Any]:
 
 
 def _skillset_def() -> Dict[str, Any]:
-    """Two-skill pipeline: Split → AOAI embedding.
+    """OCR-augmented pipeline: OCR images → Merge → Split → AOAI embedding.
 
-    PDF text extraction is handled by the blob indexer's native parser
-    (``parsingMode: default``) — no OCR skill, no Cognitive Services account
-    required. Scanned PDFs without embedded text won't yield content; those
-    are best handled by a one-off pre-processing pass.
+    When an AI Services multi-service account is configured (via
+    ``AZURE_AI_SERVICES_*``), the indexer extracts normalized images from
+    each PDF and OCRs them, then merges OCR text into the native PDF text
+    before chunking. This means scanned PDFs without embedded text still
+    contribute to the index.
 
-    - SplitSkill: chunks ``/document/content`` into ~chunk_chars pages with
-      200-char overlap.
-    - AzureOpenAIEmbeddingSkill: vectorizes each chunk via the configured
-      AOAI embedding deployment.
-
-    Index projections in the skillset write one document per chunk into the
-    v2 index.
+    When no AI Services account is configured, falls back to native-only
+    (no OCR) — scanned PDFs will produce no chunks.
     """
     if not settings.openai_endpoint or not settings.openai_api_key:
         raise RuntimeError("AZURE_OPENAI_ENDPOINT / _API_KEY not set; required for embedding skill")
     if not settings.openai_embedding_deployment:
         raise RuntimeError("AZURE_OPENAI_EMBEDDING_DEPLOYMENT not set")
 
-    return {
+    has_ocr = bool(settings.ai_services_endpoint and settings.ai_services_key)
+
+    skills: List[Dict[str, Any]] = []
+    split_source = "/document/content"
+
+    if has_ocr:
+        skills.append({
+            "@odata.type": "#Microsoft.Skills.Vision.OcrSkill",
+            "name": "ocr",
+            "description": "OCR scanned page images",
+            "context": "/document/normalized_images/*",
+            "defaultLanguageCode": "en",
+            "detectOrientation": True,
+            "inputs": [
+                {"name": "image", "source": "/document/normalized_images/*"}
+            ],
+            "outputs": [{"name": "text", "targetName": "ocrText"}],
+        })
+        skills.append({
+            "@odata.type": "#Microsoft.Skills.Text.MergeSkill",
+            "name": "merge",
+            "description": "Combine native PDF text with OCR text",
+            "context": "/document",
+            "insertPreTag": " ",
+            "insertPostTag": " ",
+            "inputs": [
+                {"name": "text", "source": "/document/content"},
+                {"name": "itemsToInsert", "source": "/document/normalized_images/*/ocrText"},
+                {"name": "offsets", "source": "/document/normalized_images/*/contentOffset"},
+            ],
+            "outputs": [{"name": "mergedText", "targetName": "mergedContent"}],
+        })
+        split_source = "/document/mergedContent"
+
+    skills.append({
+        "@odata.type": "#Microsoft.Skills.Text.SplitSkill",
+        "name": "split",
+        "description": "Chunk extracted text for retrieval",
+        "context": "/document",
+        "textSplitMode": "pages",
+        "maximumPageLength": settings.chunk_chars,
+        "pageOverlapLength": 200,
+        "defaultLanguageCode": "en",
+        "inputs": [{"name": "text", "source": split_source}],
+        "outputs": [{"name": "textItems", "targetName": "pages"}],
+    })
+    skills.append({
+        "@odata.type": "#Microsoft.Skills.Text.AzureOpenAIEmbeddingSkill",
+        "name": "embed",
+        "description": "Vectorize each chunk via Azure OpenAI",
+        "context": "/document/pages/*",
+        "resourceUri": settings.openai_endpoint.rstrip("/"),
+        "apiKey": settings.openai_api_key,
+        "deploymentId": settings.openai_embedding_deployment,
+        "modelName": settings.openai_embedding_deployment,
+        "dimensions": settings.openai_embedding_dimensions,
+        "inputs": [{"name": "text", "source": "/document/pages/*"}],
+        "outputs": [{"name": "embedding", "targetName": "content_vector"}],
+    })
+
+    skillset: Dict[str, Any] = {
         "name": SKILLSET_NAME,
-        "description": "UAP pull-ingest: Split + AOAI embedding (native PDF parsing)",
-        "skills": [
-            {
-                "@odata.type": "#Microsoft.Skills.Text.SplitSkill",
-                "name": "split",
-                "description": "Chunk extracted text for retrieval",
-                "context": "/document",
-                "textSplitMode": "pages",
-                "maximumPageLength": settings.chunk_chars,
-                "pageOverlapLength": 200,
-                "defaultLanguageCode": "en",
-                "inputs": [{"name": "text", "source": "/document/content"}],
-                "outputs": [{"name": "textItems", "targetName": "pages"}],
-            },
-            {
-                "@odata.type": "#Microsoft.Skills.Text.AzureOpenAIEmbeddingSkill",
-                "name": "embed",
-                "description": "Vectorize each chunk via Azure OpenAI",
-                "context": "/document/pages/*",
-                "resourceUri": settings.openai_endpoint.rstrip("/"),
-                "apiKey": settings.openai_api_key,
-                "deploymentId": settings.openai_embedding_deployment,
-                "modelName": settings.openai_embedding_deployment,
-                "dimensions": settings.openai_embedding_dimensions,
-                "inputs": [{"name": "text", "source": "/document/pages/*"}],
-                "outputs": [{"name": "embedding", "targetName": "content_vector"}],
-            },
-        ],
+        "description": "UAP pull-ingest: OCR+Merge+Split+Embed" if has_ocr else "UAP pull-ingest: Split+Embed",
+        "skills": skills,
         "indexProjections": {
             "selectors": [
                 {
@@ -178,10 +208,7 @@ def _skillset_def() -> Dict[str, Any]:
                     "sourceContext": "/document/pages/*",
                     "mappings": [
                         {"name": "content", "source": "/document/pages/*"},
-                        {
-                            "name": "content_vector",
-                            "source": "/document/pages/*/content_vector",
-                        },
+                        {"name": "content_vector", "source": "/document/pages/*/content_vector"},
                         {"name": "title", "source": "/document/metadata_storage_name"},
                         {"name": "source_url", "source": "/document/metadata_storage_path"},
                         {"name": "blob_name", "source": "/document/metadata_storage_name"},
@@ -191,6 +218,15 @@ def _skillset_def() -> Dict[str, Any]:
             "parameters": {"projectionMode": "skipIndexingParentDocuments"},
         },
     }
+
+    if has_ocr:
+        skillset["cognitiveServices"] = {
+            "@odata.type": "#Microsoft.Azure.Search.CognitiveServicesByKey",
+            "description": "Multi-service AI Services account for billable OCR",
+            "key": settings.ai_services_key,
+        }
+
+    return skillset
 
 
 def _index_v2_def() -> Dict[str, Any]:
@@ -233,6 +269,50 @@ def _index_v2_def() -> Dict[str, Any]:
                 "retrievable": True,
                 "dimensions": settings.openai_embedding_dimensions,
                 "vectorSearchProfile": VECTOR_PROFILE_NAME,
+            },
+            # Metadata enriched after indexing (populated by enrich_v2_metadata())
+            {
+                "name": "document_id",
+                "type": "Edm.String",
+                "filterable": True,
+                "facetable": True,
+            },
+            {
+                "name": "agency",
+                "type": "Edm.String",
+                "filterable": True,
+                "facetable": True,
+            },
+            {
+                "name": "release_date",
+                "type": "Edm.String",
+                "filterable": True,
+                "sortable": True,
+            },
+            {
+                "name": "incident_date",
+                "type": "Edm.String",
+                "filterable": True,
+                "sortable": True,
+            },
+            {
+                "name": "location",
+                "type": "Edm.String",
+                "filterable": True,
+                "facetable": True,
+                "searchable": True,
+            },
+            {
+                "name": "page_number",
+                "type": "Edm.Int32",
+                "filterable": True,
+                "sortable": True,
+            },
+            {
+                "name": "chunk_index",
+                "type": "Edm.Int32",
+                "filterable": True,
+                "sortable": True,
             },
         ],
         "vectorSearch": {
@@ -277,7 +357,21 @@ def _indexer_def() -> Dict[str, Any]:
     ``maxFailedItems = -1`` keeps the run going past per-blob failures (e.g.
     blobs larger than the tier's per-blob indexer limit, or unparseable
     scanned PDFs with no embedded text).
+
+    When AI Services is configured we set ``imageAction =
+    generateNormalizedImages`` so the OCR skill can run on scanned pages.
     """
+    has_ocr = bool(settings.ai_services_endpoint and settings.ai_services_key)
+    config: Dict[str, Any] = {
+        "dataToExtract": "contentAndMetadata",
+        "parsingMode": "default",
+        "indexedFileNameExtensions": ".pdf",
+    }
+    if has_ocr:
+        config["imageAction"] = "generateNormalizedImages"
+        config["normalizedImageMaxWidth"] = 2000
+        config["normalizedImageMaxHeight"] = 2000
+
     return {
         "name": INDEXER_NAME,
         "dataSourceName": DATASOURCE_NAME,
@@ -287,11 +381,7 @@ def _indexer_def() -> Dict[str, Any]:
             "batchSize": 1,
             "maxFailedItems": -1,
             "maxFailedItemsPerBatch": -1,
-            "configuration": {
-                "dataToExtract": "contentAndMetadata",
-                "parsingMode": "default",
-                "indexedFileNameExtensions": ".pdf",
-            },
+            "configuration": config,
         },
         "fieldMappings": [],
         "outputFieldMappings": [],
@@ -360,3 +450,115 @@ def teardown() -> Dict[str, Any]:
         "data_source": _delete(f"datasources/{DATASOURCE_NAME}"),
     }
     return out
+
+
+# ---------------------------------------------------------- Metadata enrich
+def enrich_v2_metadata(batch_size: int = 200) -> Dict[str, Any]:
+    """Backfill CSV metadata onto v2 chunks.
+
+    The blob indexer produces chunks with only blob-derived fields. This pass
+    walks the v2 index, looks up each chunk's source document in the CSV
+    store via ``blob_name`` (basename match against ``local_file_path``), and
+    merges agency / release_date / incident_date / location / document_id
+    plus an inferred chunk_index sequence into each chunk.
+
+    Idempotent. Safe to re-run after indexer cycles. Uses mergeOrUpload so
+    only metadata fields are touched — content_vector etc. are preserved.
+    """
+    from .store import store
+
+    if not store.documents:
+        store.load()
+
+    # Build blob_name -> DocumentRecord lookup once
+    by_blob: Dict[str, Any] = {}
+    for d in store.documents:
+        if d.local_file_path:
+            by_blob[d.local_file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()] = d
+
+    stats = {
+        "scanned": 0,
+        "patched": 0,
+        "no_match": 0,
+        "unique_documents": 0,
+    }
+    matched_docs: set = set()
+
+    # Sort by parent_id so chunks for one doc come in order; assign chunk_index
+    select_fields = "chunk_id,blob_name,parent_id"
+    skip = 0
+    parent_last = None
+    chunk_seq = 0
+
+    while True:
+        body = {
+            "search": "*",
+            "select": select_fields,
+            "top": batch_size,
+            "skip": skip,
+            "orderby": "parent_id asc,chunk_id asc",
+            "count": False,
+        }
+        r = httpx.post(
+            _url(f"indexes/{INDEX_V2_NAME}/docs/search"),
+            headers=_headers(),
+            json=body,
+            timeout=60.0,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"v2 search failed: {r.status_code} {r.text}")
+        page = r.json().get("value", []) or []
+        if not page:
+            break
+
+        patches = []
+        for c in page:
+            stats["scanned"] += 1
+            blob = (c.get("blob_name") or "").lower()
+            parent = c.get("parent_id") or ""
+            if parent != parent_last:
+                parent_last = parent
+                chunk_seq = 0
+            else:
+                chunk_seq += 1
+
+            doc = by_blob.get(blob)
+            if not doc:
+                # Try part-suffix fallback: "foo_part03.pdf" -> "foo.pdf"
+                import re
+                m = re.match(r"^(?P<stem>.+)_part\d+\.pdf$", blob, re.IGNORECASE)
+                if m:
+                    doc = by_blob.get(m.group("stem") + ".pdf")
+            if not doc:
+                stats["no_match"] += 1
+                continue
+            matched_docs.add(doc.document_id)
+            patches.append({
+                "@search.action": "mergeOrUpload",
+                "chunk_id": c["chunk_id"],
+                "document_id": doc.document_id,
+                "agency": doc.agency or None,
+                "release_date": doc.release_date or None,
+                "incident_date": doc.incident_date or None,
+                "location": (doc.incident_location or None),
+                "chunk_index": chunk_seq,
+            })
+
+        if patches:
+            up = httpx.post(
+                _url(f"indexes/{INDEX_V2_NAME}/docs/index"),
+                headers=_headers(),
+                json={"value": patches},
+                timeout=120.0,
+            )
+            if up.status_code >= 400:
+                raise RuntimeError(f"v2 merge failed: {up.status_code} {up.text}")
+            stats["patched"] += len(patches)
+
+        if len(page) < batch_size:
+            break
+        skip += batch_size
+
+    stats["unique_documents"] = len(matched_docs)
+    log.info("v2 metadata enrichment: %s", stats)
+    return stats

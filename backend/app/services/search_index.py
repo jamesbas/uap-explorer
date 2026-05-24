@@ -5,7 +5,7 @@ import logging
 from typing import Iterable, List, Optional
 
 from ..config import settings
-from .azure_clients import search_client, search_index_client
+from .azure_clients import search_client, search_client_v1, search_index_client
 
 log = logging.getLogger(__name__)
 
@@ -86,8 +86,8 @@ def recreate_index() -> dict:
 
 
 def upload_chunks(chunks: List[dict]) -> int:
-    """Upload chunks in batches of 500."""
-    client = search_client()
+    """Upload chunks in batches of 500 (always to legacy v1 index)."""
+    client = search_client_v1()
     total = 0
     BATCH = 500
     for i in range(0, len(chunks), BATCH):
@@ -98,8 +98,8 @@ def upload_chunks(chunks: List[dict]) -> int:
 
 
 def delete_document_chunks(document_id: str) -> int:
-    """Remove all chunks for a given document_id."""
-    client = search_client()
+    """Remove all chunks for a given document_id (legacy v1 index)."""
+    client = search_client_v1()
     results = client.search(
         search_text="*",
         filter=f"document_id eq '{document_id}'",
@@ -162,14 +162,26 @@ def get_document_chunks(document_id: str, max_chunks: int = 200) -> list[dict]:
 
 
 def index_stats() -> dict:
-    """Return basic stats: doc count + unique source documents."""
+    """Return basic stats on the *active* (read) index."""
     client = search_client()
+    active_name = (
+        settings.search_index_v2_name
+        if settings.use_search_v2
+        else settings.search_index_name
+    )
     try:
         count = client.get_document_count()
     except Exception:
         count = None
+    # exists() is for the legacy v1 index; check active via direct call
+    try:
+        search_index_client().get_index(active_name)
+        exists = True
+    except Exception:
+        exists = False
     return {
-        "index_name": settings.search_index_name,
-        "exists": index_exists(),
+        "index_name": active_name,
+        "active": "v2" if settings.use_search_v2 else "v1",
+        "exists": exists,
         "chunk_count": count,
     }

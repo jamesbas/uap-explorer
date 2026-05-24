@@ -60,6 +60,8 @@ class Settings:
     search_endpoint: str = os.getenv("AZURE_SEARCH_ENDPOINT", "")
     search_admin_key: str = os.getenv("AZURE_SEARCH_ADMIN_KEY", "")
     search_index_name: str = os.getenv("AZURE_SEARCH_INDEX_NAME", "uap-explorer-chunks")
+    search_index_v2_name: str = os.getenv("AZURE_SEARCH_INDEX_V2_NAME", "uap-explorer-chunks-v2")
+    use_search_v2: bool = os.getenv("USE_SEARCH_V2", "true").lower() == "true"
 
     # OpenAI / Foundry
     openai_endpoint: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
@@ -74,6 +76,10 @@ class Settings:
     # Document Intelligence
     docintel_endpoint: str = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "")
     docintel_key: str = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", "")
+
+    # AI Services multi-service account (used by skillset for built-in skills like OCR)
+    ai_services_endpoint: str = os.getenv("AZURE_AI_SERVICES_ENDPOINT", "")
+    ai_services_key: str = os.getenv("AZURE_AI_SERVICES_KEY", "")
 
     # Ingestion
     ingestion_max_docs: int = int(os.getenv("INGESTION_MAX_DOCS", "30"))

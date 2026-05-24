@@ -174,3 +174,12 @@ def search_indexer_teardown(_: None = Depends(require_admin)) -> dict[str, Any]:
         return search_indexer.teardown()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Teardown failed: {e}")
+
+
+@router.post("/api/admin/search-indexer/enrich")
+def search_indexer_enrich(_: None = Depends(require_admin)) -> dict[str, Any]:
+    """Backfill agency/release_date/etc. metadata onto v2 chunks from the CSV store."""
+    try:
+        return search_indexer.enrich_v2_metadata()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Enrich failed: {e}")

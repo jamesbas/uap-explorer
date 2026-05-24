@@ -62,6 +62,35 @@ def search_client():
     if not settings.search_endpoint:
         raise RuntimeError("AZURE_SEARCH_ENDPOINT not set")
 
+    index = (
+        settings.search_index_v2_name
+        if settings.use_search_v2
+        else settings.search_index_name
+    )
+
+    if settings.use_managed_identity:
+        return SearchClient(
+            endpoint=settings.search_endpoint,
+            index_name=index,
+            credential=_credential(),
+        )
+    if not settings.search_admin_key:
+        raise RuntimeError("AZURE_SEARCH_ADMIN_KEY not set")
+    return SearchClient(
+        endpoint=settings.search_endpoint,
+        index_name=index,
+        credential=AzureKeyCredential(settings.search_admin_key),
+    )
+
+
+@lru_cache(maxsize=1)
+def search_client_v1():
+    """Always returns a client for the legacy v1 index (used by push pipeline)."""
+    from azure.core.credentials import AzureKeyCredential
+    from azure.search.documents import SearchClient
+
+    if not settings.search_endpoint:
+        raise RuntimeError("AZURE_SEARCH_ENDPOINT not set")
     if settings.use_managed_identity:
         return SearchClient(
             endpoint=settings.search_endpoint,

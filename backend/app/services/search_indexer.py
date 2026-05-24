@@ -470,11 +470,20 @@ def enrich_v2_metadata(batch_size: int = 200) -> Dict[str, Any]:
     if not store.documents:
         store.load()
 
-    # Build blob_name -> DocumentRecord lookup once
+    # Build blob_name -> DocumentRecord lookup once.
+    # Many CSV rows lack ``local_file_path`` but include a ``source_url`` whose
+    # basename matches the blob name uploaded to storage. We index both.
     by_blob: Dict[str, Any] = {}
     for d in store.documents:
+        candidates = []
         if d.local_file_path:
-            by_blob[d.local_file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()] = d
+            candidates.append(d.local_file_path)
+        if d.source_url:
+            candidates.append(d.source_url)
+        for path in candidates:
+            base = path.rsplit("?", 1)[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+            if base and base not in by_blob:
+                by_blob[base] = d
 
     stats = {
         "scanned": 0,
